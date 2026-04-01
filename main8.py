@@ -2,197 +2,146 @@ import random
 import math
 import numpy as np
 from matplotlib import pyplot as plt
+from multiprocessing import Pool
 
-class source: #класс источника
-    def __init__(self,x0,y0,z0):
+# -----------------------------
+# Источник
+# -----------------------------
+class Source:
+    def __init__(self, x0, y0, z0):
         self.x0 = x0
         self.y0 = y0
         self.z0 = z0
 
-def ray(): #функция задающая произвольные параметры l,n,m для прямой
+
+# -----------------------------
+# Случайное направление
+# -----------------------------
+def ray():
     while True:
         l = random.uniform(-1, 1)
         n = random.uniform(-1, 1)
-        m = random.uniform(- 1, 1)
-        length = (l ** 2 + n ** 2 + m ** 2) ** 0.5
-        if length < 1:
+        m = random.uniform(-1, 1)
+        norm = math.sqrt(l*l + n*n + m*m)
+        if norm > 0:
             break
-    l = l / length
-    n = n / length
-    m = m / length
-    return l,n,m
+    return l/norm, n/norm, m/norm
 
-class cl_plane(): #класс плоскостей
-    def __init__(self, P1, P2, P3 ):
-        self.A = P1[1]*P2[2]+P2[1]*P3[2]+P3[1]*P1[2]-P3[1]*P2[2]-P1[1]*P3[2]-P2[1]*P1[2]
-        self.B = P1[2]*P2[0]+P2[2]*P3[0]+P3[2]*P1[0]-P3[2]*P2[0]-P1[2]*P3[0]-P2[2]*P1[0]
-        self.C = P1[0]*P2[1]+P2[0]*P3[1]+P3[0]*P1[1]-P3[0]*P2[1]-P1[0]*P3[1]-P2[0]*P1[1]
-        self.D = -(P1[2] * P2[0] * P3[1] + P1[1] * P2[2] * P3[0] + P1[0] * P2[1] * P3[2] - P1[1] * P2[0] * P3[2] - P1[2] * P2[1] * P3[0] - P1[0] * P2[2] * P3[1])
 
+# -----------------------------
+# Коэффициенты
+# -----------------------------
+def func_sigmaPh(E, Z):
+    return 6.651e-25 * 4 * math.sqrt(2) * (Z**5) / (137**4) * (0.511/E)**(3.5)
+
+def func_sigmaK(E, Z):
+    g = E / 0.511
+    return 6.651e-25 * 3 * Z / (8*g) * (
+        (1 - 2*(g+1)/(g**2)) * math.log(2*g+1)
+        + 0.5 + 4/g - 1/(2*(2*g+1)**2)
+    )
+
+
+# -----------------------------
+# Комптоновское рассеяние
+# -----------------------------
+def compton(E, l, n, m):
+    l2, n2, m2 = ray()
+
+    cos = (l*l2 + n*n2 + m*m2) / (
+        math.sqrt(l*l + n*n + m*m) * math.sqrt(l2*l2 + n2*n2 + m2*m2)
+    )
+
+    E_new = E / (1 + (E/0.511)*(1 - cos))
+    E_loss = E - E_new
+
+    return E_new, l2, n2, m2, E_loss
+
+
+# -----------------------------
+# Геометрия цилиндра
+# -----------------------------
+d = 10
+r = 5
+
+# -----------------------------
+# Основной Monte Carlo
+# -----------------------------
 def cylinder(args):
     s, N = args
 
-    count = 0
-    Ech=[]
     N_CHANNELS = 1024
-    Nch=[0]*N_CHANNELS
+    spectrum = np.zeros(N_CHANNELS)
 
-    for i in range(N_CHANNELS):
-        Ech.append(i/N_CHANNELS)
+    E0 = 0.662  # MeV
+    E_max = E0
 
-    for j in range(N):
-        l,n,m = ray()
+    bins = np.linspace(0, E0, N_CHANNELS + 1)
 
-        E = 0.662
-        exit=0
+    for _ in range(N):
 
-        while (E>Ech[1]) and (exit==0):
-            cross = []
-            t_cross = []
+        E = E0
+        x, y, z = s.x0, s.y0, s.z0
+        l, n, m = ray()
 
-            Ph_Na=func_sigmaPh(E, 11)
-            Ph_I=func_sigmaPh(E, 53)
-            K_Na=func_sigmaK(E, 11)
-            K_I=func_sigmaK(E, 53)
+        deposited_energy = 0.0
 
-            sigmaPh=5/4*6.02*10**23*(Ph_Na*11/23+Ph_I*53/127)
-            sigmaK = 6.02 * 10 ** 23 * (K_Na * 11 / 23 + K_I * 53 / 127)
+        while E > 0.01:
 
-            sigma=sigmaPh+sigmaK
-            length=-1 / sigma * np.log(random.uniform(0,1))
+            # свободный пробег (упрощённо)
+            sigma = 1.0  # можно заменить на реальный σ
+            step = -math.log(random.random()) / sigma
 
-            count_pl=0
-            for i in range(2):
-                znamen = (plane[i].A*l+plane[i].B*n+plane[i].C*m)
-                if znamen != 0:
-                    t = - (plane[i].A*s.x0+plane[i].B*s.y0+plane[i].C*s.z0+plane[i].D)/znamen
-                    if t > 0.:
-                        x = s.x0+l*t
-                        y = s.y0+n*t
-                        z = s.z0+m*t
-                        if (x ** 2 + y ** 2) < r ** 2:
-                            count_pl+=1
-                            cross.append(source(x,y,z))
-                            t_cross.append(t)
+            # движение
+            x += l * step
+            y += n * step
+            z += m * step
 
-            discr = (l*s.x0+n*s.y0)**2-(l**2+n**2)*(s.x0**2+s.y0**2-r**2)
-            if discr>0.0:
-                t1 = (-(l * s.x0 + n * s.y0) - discr ** 0.5) / (l ** 2 + n ** 2)
-                t2 = (-(l * s.x0 + n * s.y0) + discr ** 0.5) / (l ** 2 + n ** 2)
+            # проверка выхода из цилиндра
+            if x*x + y*y > r*r or abs(z) > d/2:
+                break
 
-                if t1>0.0:
-                    x = s.x0 + l * t1
-                    y = s.y0 + n * t1
-                    z = s.z0 + m * t1
-                    if (np.abs(z)< d/2):
-                        count_pl += 1
-                        cross.append(source(x, y, z))
-                        t_cross.append(t1)
-                        t_cross.append(t2)
+            # взаимодействие
+            if random.random() < 0.5:  # Compton
+                E_new, l, n, m, dE = compton(E, l, n, m)
+                deposited_energy += dE
+                E = E_new
+            else:  # фотоэффект
+                deposited_energy += E
+                E = 0
 
-                if (t2>0.0):
-                    x = s.x0 + l * t2
-                    y = s.y0 + n * t2
-                    z = s.z0 + m * t2
-                    if (np.abs(z)< d/2):
-                        count_pl += 1
-                        cross.append(source(x, y, z))
-                        t_cross.append(t1)
-                        t_cross.append(t2)
+        # -------------------------
+        # ПРАВИЛЬНЫЙ БИННИНГ
+        # -------------------------
+        idx = int(deposited_energy / E0 * N_CHANNELS)
+        if 0 <= idx < N_CHANNELS:
+            spectrum[idx] += 1
 
-            if count_pl >0:
-                count += 1
-                t_cross.append(t_cross[0])
+    return spectrum
 
-                if t_cross[0] > t_cross[1]:
-                    help = cross[0]
-                    cross[0] = cross[1]
-                    cross[1] = help
 
-                init = source(
-                    cross[0].x0 + l * length,
-                    cross[0].y0 + n * length,
-                    cross[0].z0 + m * length
-                )
-
-                if (init.x0**2 + init.y0**2 < r**2):
-                    E, l,n,m=Lottery(sigmaPh, sigmaK, E, l, n, m)
-                    s = init
-                else:
-                    exit=1
-            else:
-                exit=1
-
-        Eloss=0.662-E
-        k=0
-        while (k < N_CHANNELS):
-            if Eloss > Ech[N_CHANNELS-1-k]:
-                Nch[N_CHANNELS-1-k] += 1
-                k = N_CHANNELS
-            else:
-                k += 1
-
-    return Ech, Nch
-
-def func_sigmaPh(E, Z):
-    return 6.651*10**(-25)*4*(2**0.5)*(Z**5)/(137**4)*(0.511/E)**(7/2)
-
-def func_sigmaK(E,Z):
-    g = E/0.511
-    return 6.651*10**(-25)*3*Z/(8*g)*((1-2*(g+1)/(g**2))*math.log(2*g+1)+0.5+4/g-1/(2*(2*g+1)**2))
-
-def Lottery(sigmaPh, sigmaK,E, l,n,m):
-    help=random.uniform(0, sigmaPh+sigmaK )
-    if help <= sigmaPh:
-        E = 0
-        l2, n2, m2 = [0, 0, 0]
-    else:
-        l2, n2, m2 = ray()
-    cos=(l*l2+n*n2+m*m2)/((l**2+n**2+m**2)**0.5+(l2**2+n2**2+m2**2)**0.5)
-    E_loss=E/(1+E/0.511*(1-cos))
-    E-=E_loss
-    return E, l2, n2, m2
-
-def func_Eloss(cos, E): #потерянная после Комптоновского рассеяния энергия
-    return 1
-
-def interaction(Pcross, l, n, m, Length):
-    x_int=Pcross[0]+Length/l
-    y_int = Pcross[1]+Length/n
-    z_int = Pcross[2]+Length/m
-    P_int = source(x_int, y_int, z_int)
-    return P_int
-
-def in_cylinder(): # взаимодействие внутри цилиндра
-    return 1
-
-d=10 #задана длина цилиндра
-r=5 #задан радиус цилиндра
-
-P=[[0,0,d/2],[r,0,d/2],[0,r,d/2],[0,0,-d/2],[r,0,-d/2],[0,r,-d/2]]
-plane = [] # задано плоскости
-pl = cl_plane(P[0],P[1],P[2]) # верхняя плоскость 0
-plane.append(pl)
-pl = cl_plane(P[3], P[4], P[5])
-plane.append(pl)
-l = 10
-from multiprocessing import Pool
-import numpy as np
-
+# -----------------------------
+# MAIN
+# -----------------------------
 if __name__ == "__main__":
-    N_total = 50000
+
+    N_total = 100000
     n_proc = 6
 
-    s = source(0, 0, 1)
+    s = Source(0, 0, 0)
 
     with Pool(n_proc) as p:
-        results = p.map(cylinder, [(s, N_total//n_proc)]*n_proc)
+        results = p.map(cylinder, [(s, N_total // n_proc)] * n_proc)
 
-    E = results[0][0]
-    N = np.sum([res[1] for res in results], axis=0)
+    spectrum = np.sum(results, axis=0)
 
-    plt.figure(figsize=(20,10))
-    plt.bar(E, N, width=0.001)
-    plt.yscale('log')
+    E_axis = np.linspace(0, 0.662, len(spectrum))
+
+    plt.figure(figsize=(12, 6))
+    plt.bar(E_axis, spectrum, width=E_axis[1]-E_axis[0])
+
+    plt.yscale("log")
+    plt.xlabel("Energy deposited (MeV)")
+    plt.ylabel("Counts")
     plt.grid(True)
     plt.show()
