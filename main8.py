@@ -29,88 +29,109 @@ class cl_plane(): #класс плоскостей
         self.C = P1[0]*P2[1]+P2[0]*P3[1]+P3[0]*P1[1]-P3[0]*P2[1]-P1[0]*P3[1]-P2[0]*P1[1]
         self.D = -(P1[2] * P2[0] * P3[1] + P1[1] * P2[2] * P3[0] + P1[0] * P2[1] * P3[2] - P1[1] * P2[0] * P3[2] - P1[2] * P2[1] * P3[0] - P1[0] * P2[2] * P3[1])
 
-def cylinder(s):
+def cylinder(args):
+    s, N = args
+
     count = 0
     Ech=[]
-    Nch=[0]*1000 # число частиц в канале
-    for i in range(1000):
-        Ech.append(i/1000)#в МэВ
-    N=1000
+    N_CHANNELS = 1024
+    Nch=[0]*N_CHANNELS
+
+    for i in range(N_CHANNELS):
+        Ech.append(i/N_CHANNELS)
+
     for j in range(N):
-        l,n,m = ray()#направляем произвольный луч
-        E=0.665 #задаем энергию
+        l,n,m = ray()
+
+        E = 0.662
         exit=0
+
         while (E>Ech[1]) and (exit==0):
             cross = []
             t_cross = []
-            Ph_Na=func_sigmaPh(E, 11) # расчет длины пробега через сечение
+
+            Ph_Na=func_sigmaPh(E, 11)
             Ph_I=func_sigmaPh(E, 53)
             K_Na=func_sigmaK(E, 11)
             K_I=func_sigmaK(E, 53)
+
             sigmaPh=5/4*6.02*10**23*(Ph_Na*11/23+Ph_I*53/127)
             sigmaK = 6.02 * 10 ** 23 * (K_Na * 11 / 23 + K_I * 53 / 127)
 
             sigma=sigmaPh+sigmaK
             length=-1 / sigma * np.log(random.uniform(0,1))
 
-            count_pl=0 # счетчик пересечения плоскостей
-            for i in range(2):#пересекаем по очереди со всеми плоскостями
+            count_pl=0
+            for i in range(2):
                 znamen = (plane[i].A*l+plane[i].B*n+plane[i].C*m)
                 if znamen != 0:
-                    t = - (plane[i].A*s.x0+plane[i].B*s.y0+plane[i].C*s.z0+plane[i].D)/znamen # пересечение произвольной прямой и плоскости
+                    t = - (plane[i].A*s.x0+plane[i].B*s.y0+plane[i].C*s.z0+plane[i].D)/znamen
                     if t > 0.:
-                        x = s.x0+l*t #координаты пересечения
+                        x = s.x0+l*t
                         y = s.y0+n*t
                         z = s.z0+m*t
                         if (x ** 2 + y ** 2) < r ** 2:
                             count_pl+=1
-                            cross.append(source(x,y,z))#точка входа/выхода луча
+                            cross.append(source(x,y,z))
                             t_cross.append(t)
-            discr = (l*s.x0+n*s.y0)**2-(l**2+n**2)*(s.x0**2+s.y0**2-r**2) #деленный на 4
+
+            discr = (l*s.x0+n*s.y0)**2-(l**2+n**2)*(s.x0**2+s.y0**2-r**2)
             if discr>0.0:
                 t1 = (-(l * s.x0 + n * s.y0) - discr ** 0.5) / (l ** 2 + n ** 2)
                 t2 = (-(l * s.x0 + n * s.y0) + discr ** 0.5) / (l ** 2 + n ** 2)
+
                 if t1>0.0:
-                    x = s.x0 + l * t1 # координаты пересечения
+                    x = s.x0 + l * t1
                     y = s.y0 + n * t1
                     z = s.z0 + m * t1
                     if (np.abs(z)< d/2):
                         count_pl += 1
                         cross.append(source(x, y, z))
-                        t_cross.append(t)
+                        t_cross.append(t1)
+                        t_cross.append(t2)
+
                 if (t2>0.0):
-                    x = s.x0 + l * t2 # координаты пересечения
+                    x = s.x0 + l * t2
                     y = s.y0 + n * t2
                     z = s.z0 + m * t2
                     if (np.abs(z)< d/2):
                         count_pl += 1
                         cross.append(source(x, y, z))
-                        t_cross.append(t)
+                        t_cross.append(t1)
+                        t_cross.append(t2)
 
             if count_pl >0:
                 count += 1
-                t_cross.append(t_cross[0])#на случай одного пересечения (если пересечения 2, просто добавится третий элемент) нигде не будет учитываться
+                t_cross.append(t_cross[0])
+
                 if t_cross[0] > t_cross[1]:
                     help = cross[0]
                     cross[0] = cross[1]
                     cross[1] = help
-                init = source(cross[0].x0 + length / l, cross[0].y0 + length / n, cross[0].z0 + length / m) # точка взаимодействия
-                if ((d/2>init.x0**2+init.y0**2)):
+
+                init = source(
+                    cross[0].x0 + l * length,
+                    cross[0].y0 + n * length,
+                    cross[0].z0 + m * length
+                )
+
+                if (init.x0**2 + init.y0**2 < r**2):
                     E, l,n,m=Lottery(sigmaPh, sigmaK, E, l, n, m)
                     s = init
                 else:
-                    exit=1 #частица вылетает из цилиндра
+                    exit=1
             else:
-                exit=1 #частица не перескает цилиндр
+                exit=1
 
-        Eloss=0.665-E
+        Eloss=0.662-E
         k=0
-        while (k<1000):#канал энергии
-            if Eloss>Ech[999-k]:
-                Nch[999-k]+=1
-                k=1000
+        while (k < N_CHANNELS):
+            if Eloss > Ech[N_CHANNELS-1-k]:
+                Nch[N_CHANNELS-1-k] += 1
+                k = N_CHANNELS
             else:
-                k+=1
+                k += 1
+
     return Ech, Nch
 
 def func_sigmaPh(E, Z):
@@ -155,10 +176,23 @@ plane.append(pl)
 pl = cl_plane(P[3], P[4], P[5])
 plane.append(pl)
 l = 10
-s = source(0, 0, 1)
-E,N = cylinder(s)
-plt.figure(figsize=(20,10))
-plt.bar(E, N, width=0.001)
-plt.yscale('log')
-plt.grid(True)
-plt.show()
+from multiprocessing import Pool
+import numpy as np
+
+if __name__ == "__main__":
+    N_total = 50000
+    n_proc = 6
+
+    s = source(0, 0, 1)
+
+    with Pool(n_proc) as p:
+        results = p.map(cylinder, [(s, N_total//n_proc)]*n_proc)
+
+    E = results[0][0]
+    N = np.sum([res[1] for res in results], axis=0)
+
+    plt.figure(figsize=(20,10))
+    plt.bar(E, N, width=0.001)
+    plt.yscale('log')
+    plt.grid(True)
+    plt.show()
