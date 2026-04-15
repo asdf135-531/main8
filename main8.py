@@ -4,376 +4,339 @@ import numpy as np
 import matplotlib.pyplot as plt
 import time
 import multiprocessing as mp
+from functools import partial
 
-NUM_PROCESSES = 4
-
-R = 2.0
-D = 4.0
-half_height = D / 2.0
-
-X0, Y0, Z0 = 4.0, 0.0, 0.0
-N = 1000000
-NBINS = 1024
-
-m_e = 0.511
-r_e = 2.818e-13
 NA = 6.022e23
-rho = 3.67
+mc2 = 0.511
+Z_Na = 11
+Z_I = 53
+A_Na = 22.99
+A_I = 126.9
+rho_NaI = 3.67
 M_NaI = 149.89
 
-n_mol = rho * NA / M_NaI
-n_Na = n_mol
-n_I = n_mol
+n_molecules = (rho_NaI / M_NaI) * NA
+N_Na = n_molecules
+N_I = n_molecules
+
+E_min = 0.05
+E_max = 1.0
+num_channels = 1024
+Cch = (E_max - E_min) / num_channels
+
+# Глобальные переменные для процессов (доступны только для чтения)
+# Используем mp.Array для разделяемой памяти
+shared_params = None
 
 
-def get_source_spectrum(source_name):
-    sources = {
-        'Cs137': [(0.662, 1.0)],
-        'Co60': [(1.173, 1.0), (1.333, 1.0)],
-        'Na22': [(0.511, 0.5), (1.274, 0.5)],
-        'Ba133': [(0.356, 0.62), (0.081, 0.34), (0.303, 0.19), (0.276, 0.07)],
-        'Am241': [(0.060, 1.0)],
-        'Eu152': [(0.122, 0.28), (0.344, 0.27), (0.964, 0.15), (1.112, 0.14),
-                  (1.408, 0.21), (0.245, 0.07), (0.444, 0.03)]
-    }
-    lines = sources.get(source_name, [(0.662, 1.0)])
-    total_p = sum(p for _, p in lines)
-    if total_p > 0:
-        lines = [(e, p / total_p) for e, p in lines]
-    return lines
-
-
-def sample_initial_energy(lines):
-    r = random.random()
-    cum = 0.0
-    for e, p in lines:
-        cum += p
-        if r < cum:
-            return e
-    return lines[-1][0]
+def init_process(params):
+    """Инициализация каждого процесса"""
+    global shared_params
+    shared_params = params
 
 
 def ray():
-    while True:
-        l = random.uniform(-1, 1)
-        m = random.uniform(-1, 1)
-        n = random.uniform(-1, 1)
-        norm = math.sqrt(l * l + m * m + n * n)
-        if norm != 0:
-            l /= norm
-            m /= norm
-            n /= norm
-            return l, m, n
+    theta = random.uniform(0, math.pi)
+    phi = random.uniform(0, 2 * math.pi)
+    l = math.sin(theta) * math.cos(phi)
+    m = math.sin(theta) * math.sin(phi)
+    n = math.cos(theta)
+    return l, m, n
+
+
+def flateABCD(P1, P2, P3):
+    x1, y1, z1 = P1
+    x2, y2, z2 = P2
+    x3, y3, z3 = P3
+    A = (y2 - y1) * (z3 - z1) - (z2 - z1) * (y3 - y1)
+    B = (z2 - z1) * (x3 - x1) - (x2 - x1) * (z3 - z1)
+    C = (x2 - x1) * (y3 - y1) - (y2 - y1) * (x3 - x1)
+    D = - (A * x1 + B * y1 + C * z1)
+    return A, B, C, D
 
 
 def crossFlat(RAY, Ps, F):
     l, m, n = RAY
-    xs, ys, zs = Ps
+    x0, y0, z0 = Ps
     A, B, C, D = F
-    denom = A * l + B * m + C * n
-    if abs(denom) < 1e-12:
-        return None
-    t = -(A * xs + B * ys + C * zs + D) / denom
+    denominator = A * l + B * m + C * n
+    if abs(denominator) < 1e-12:
+        return None, None
+    t = - (A * x0 + B * y0 + C * z0 + D) / denominator
     if t < 0:
-        return None
-    x = xs + l * t
-    y = ys + m * t
-    z = zs + n * t
-    return x, y, z
-
-
-def insideFlat(R, Pcross):
-    x, y, _ = Pcross
-    return x * x + y * y <= R * R
-
-
-def crossCil(RAY, R):
-    l, m, n = RAY
-    xs, ys, zs = X0, Y0, Z0
-    a = l * l + m * m
-    b = 2 * (xs * l + ys * m)
-    c = xs * xs + ys * ys - R * R
-    if a == 0:
-        return None
-    disc = b * b - 4 * a * c
-    if disc < 0:
-        return None
-    sqrt_disc = math.sqrt(disc)
-    t1 = (-b - sqrt_disc) / (2 * a)
-    t2 = (-b + sqrt_disc) / (2 * a)
-    t = None
-    for ti in (t1, t2):
-        if ti > 0:
-            if t is None or ti < t:
-                t = ti
-    if t is None:
-        return None
-    x = xs + l * t
-    y = ys + m * t
-    z = zs + n * t
+        return None, None
+    x = x0 + l * t
+    y = y0 + m * t
+    z = z0 + n * t
     return t, (x, y, z)
 
 
-def insideCil(d, Pcross):
-    _, _, z = Pcross
-    return abs(z) <= d
+def insideFlat(R_cyl, P_cross):
+    x, y, z = P_cross
+    return math.sqrt(x ** 2 + y ** 2) <= R_cyl
+
+
+def crossCil(RAY, R_cyl, Ps):
+    l, m, n = RAY
+    x0, y0, z0 = Ps
+    a = l ** 2 + m ** 2
+    if a < 1e-12:
+        return None, None
+    b = 2 * (x0 * l + y0 * m)
+    c = x0 ** 2 + y0 ** 2 - R_cyl ** 2
+    D = b ** 2 - 4 * a * c
+    if D < 0:
+        return None, None
+    t1 = (-b - math.sqrt(D)) / (2 * a)
+    t2 = (-b + math.sqrt(D)) / (2 * a)
+    t_min = None
+    for t in [t1, t2]:
+        if t > 1e-12:
+            if t_min is None or t < t_min:
+                t_min = t
+    if t_min is None:
+        return None, None
+    x = x0 + l * t_min
+    y = y0 + m * t_min
+    z = z0 + n * t_min
+    return t_min, (x, y, z)
+
+
+def insideCil(d_half, P, R_cyl):
+    x, y, z = P
+    if abs(z) > d_half:
+        return False
+    return math.sqrt(x ** 2 + y ** 2) <= R_cyl
+
+
+def inObj(P, d_half, R_cyl):
+    return insideCil(d_half, P, R_cyl)
 
 
 def sigmaPh(E, Z):
-    C_photo = 6.651e-25 * 4 * math.sqrt(2) / (137 ** 4) * (m_e ** 3.5)
-    return C_photo * (Z ** 5) / (E ** 3.5)
+    if E <= 0:
+        return 0
+    return 6.651e-25 * 4 * math.sqrt(2) * (Z ** 5) / (137 ** 4) * (mc2 / E) ** (7 / 2)
 
 
 def sigmaK(E, Z):
-    gamma = E / m_e
-    sigma = 6.651e-25 * 3 * Z / (8 * gamma) * (
-            (1 - (2 * (gamma + 1) / (gamma ** 2))) * math.log(2 * gamma + 1) +
-            0.5 + (4 / gamma) - (1 / (2 * (2 * (gamma + 1) ** 2)))
-    )
-    return sigma
+    if E <= 0:
+        return 0
+    gamma = E / mc2
+    if gamma <= 0:
+        return 0
+    term1 = 1 - (2 * (gamma + 1) / gamma ** 2) * math.log(2 * gamma + 1)
+    term2 = 1 / 2 + 4 / gamma - 1 / (2 * (2 * gamma + 1) ** 2)
+    return 6.651e-25 * (3 * Z) / (8 * gamma) * (term1 + term2)
 
 
-def Eloss(cost_val, E):
-    return E - E / (1 + (E / m_e) * (1 - cost_val))
+def Sigma(sigmaPh_Na, sigmaPh_I, sigmaK_Na, sigmaK_I):
+    Sigma_ph_Na = (5 / 4) * N_Na * sigmaPh_Na
+    Sigma_ph_I = (5 / 4) * N_I * sigmaPh_I
+    Sigma_ph_total = Sigma_ph_Na + Sigma_ph_I
 
+    Sigma_k_Na = NA * (Z_Na / A_Na) * sigmaK_Na
+    Sigma_k_I = NA * (Z_I / A_I) * sigmaK_I
+    Sigma_k_total = Sigma_k_Na + Sigma_k_I
 
-def Interaction(Pcur, l, m, n, L):
-    x, y, z = Pcur
-    return (x + l * L, y + m * L, z + n * L)
-
-
-def Lottery(sigma_ph_total, sigma_k_total):
-    total = sigma_ph_total + sigma_k_total
-    if total == 0:
-        return None
-    r = random.random()
-    if r < sigma_ph_total / total:
-        return 'ph'
-    else:
-        return 'k'
+    Sigma_total = Sigma_ph_total + Sigma_k_total
+    return Sigma_ph_total, Sigma_k_total, Sigma_total
 
 
 def Length(Sigma_total):
-    return -math.log(random.random()) / Sigma_total
+    if Sigma_total <= 0:
+        return float('inf')
+    return - (1.0 / Sigma_total) * math.log(random.random())
 
 
-def sample_compton_cos(E):
-    alpha = E / m_e
-    r_e_sq = r_e * r_e
-
-    # Максимальное значение дифференциального сечения (при cos_theta = 1)
-    max_dsigma = (r_e_sq / 2) * (1 + alpha + alpha ** 2) / (1 + alpha) ** 2 * (1 + alpha ** 2 / (1 + alpha) ** 2)
-    # Упрощенно: max при forward рассеянии
-    max_dsigma = r_e_sq * (1 + alpha)  # приближение
-
-    while True:
-        cos_theta = random.uniform(-1, 1)
-        E_prime = E / (1 + alpha * (1 - cos_theta))
-        ratio = E_prime / E
-
-        # Дифференциальное сечение Клейна-Нишины
-        dsigma = (r_e_sq / 2) * (ratio ** 2) * (ratio + 1 / ratio - (1 - cos_theta ** 2))
-
-        # Более точная оценка максимума
-        if dsigma > max_dsigma:
-            max_dsigma = dsigma
-
-        if random.random() < dsigma / max_dsigma:
-            return cos_theta
+def Interaction(P_cross, l, m, n, L):
+    x, y, z = P_cross
+    return (x + l * L, y + m * L, z + n * L)
 
 
-def rotate_dir(l, m, n, cos_theta, phi):
-    w = np.array([l, m, n])
-    if abs(l) < 0.999:
-        u = np.cross([1, 0, 0], w)
-    else:
-        u = np.cross([0, 1, 0], w)
-    u = u / np.linalg.norm(u)
-    v = np.cross(w, u)
-    sin_theta = math.sqrt(1 - cos_theta * cos_theta)
-    new_dir = cos_theta * w + sin_theta * math.cos(phi) * u + sin_theta * math.sin(phi) * v
-    return new_dir[0], new_dir[1], new_dir[2]
+def cost(l, m, n, ll, mm, nn):
+    return l * ll + m * mm + n * nn
 
 
-def simulate_part(start_idx, count, source_name):
-    lines = get_source_spectrum(source_name)
-    E_max = max(e for e, _ in lines)
-    E_max_keV = E_max * 1000 * 1.05
-    bin_width = E_max_keV / NBINS
-    hist = np.zeros(NBINS)
+def Eloss(cos_theta, E):
+    gamma = E / mc2
+    E_prime = E / (1 + gamma * (1 - cos_theta))
+    return E - E_prime
 
-    F_top = (0.0, 0.0, 1.0, -half_height)
-    F_bottom = (0.0, 0.0, 1.0, half_height)
 
-    for _ in range(count):
+def Lottery(Sigma_ph, Sigma_k, Sigma_total):
+    if Sigma_total <= 0:
+        return None
+    return 'ph' if random.random() < Sigma_ph / Sigma_total else 'k'
+
+
+def process_chunk(chunk_args):
+    """Обработка чанка событий (для уменьшения накладных расходов)"""
+    chunk_id, start_idx, chunk_size, R, d, Ps, F_top, F_bottom = chunk_args
+
+    # Создаём локальный спектр для чанка
+    local_spectrum = [0] * num_channels
+
+    # Устанавливаем seed для воспроизводимости
+    random.seed(chunk_id + 12345)
+
+    for _ in range(chunk_size):
+        E = 0.662
         l, m, n = ray()
+        current_point = Ps
 
-        best_t = float('inf')
-        entry_point = None
+        # Поиск точки входа
+        t_top, P_top_point = crossFlat((l, m, n), current_point, F_top)
+        hit_top = False
+        if t_top is not None and insideFlat(R, P_top_point):
+            hit_top = True
+            t_entry = t_top
+            P_entry = P_top_point
 
-        p_top = crossFlat((l, m, n), (X0, Y0, Z0), F_top)
-        if p_top is not None and insideFlat(R, p_top):
-            t = math.sqrt((p_top[0] - X0) ** 2 + (p_top[1] - Y0) ** 2 + (p_top[2] - Z0) ** 2)
-            if t > 0 and t < best_t:
-                best_t = t
-                entry_point = p_top
+        t_bottom, P_bottom_point = crossFlat((l, m, n), current_point, F_bottom)
+        hit_bottom = False
+        if t_bottom is not None and insideFlat(R, P_bottom_point):
+            hit_bottom = True
+            if not hit_top or t_bottom < t_entry:
+                t_entry = t_bottom
+                P_entry = P_bottom_point
 
-        p_bottom = crossFlat((l, m, n), (X0, Y0, Z0), F_bottom)
-        if p_bottom is not None and insideFlat(R, p_bottom):
-            t = math.sqrt((p_bottom[0] - X0) ** 2 + (p_bottom[1] - Y0) ** 2 + (p_bottom[2] - Z0) ** 2)
-            if t > 0 and t < best_t:
-                best_t = t
-                entry_point = p_bottom
+        t_cyl, P_cyl_point = crossCil((l, m, n), R, Ps)
+        hit_cyl = False
+        if t_cyl is not None and insideCil(d, P_cyl_point, R):
+            hit_cyl = True
+            if (not hit_top and not hit_bottom) or (hit_top and t_cyl < t_entry) or (hit_bottom and t_cyl < t_entry):
+                t_entry = t_cyl
+                P_entry = P_cyl_point
 
-        cil_res = crossCil((l, m, n), R)
-        if cil_res is not None:
-            t, p_side = cil_res
-            if insideCil(half_height, p_side):
-                if t > 0 and t < best_t:
-                    best_t = t
-                    entry_point = p_side
-
-        if entry_point is None:
+        if not (hit_top or hit_bottom or hit_cyl):
             continue
 
-        x, y, z = entry_point
-        E_ph = sample_initial_energy(lines)
-        total_deposited = 0.0
+        current_point = P_entry
 
-        while True:
-            # Вычисление сечений для текущей энергии фотона
-            sigma_ph_Na = sigmaPh(E_ph, 11)
-            sigma_ph_I = sigmaPh(E_ph, 53)
-            sigma_k_Na = sigmaK(E_ph, 11)
-            sigma_k_I = sigmaK(E_ph, 53)
+        while E > 0:
+            sigma_ph_Na = sigmaPh(E, Z_Na)
+            sigma_ph_I = sigmaPh(E, Z_I)
+            sigma_k_Na = sigmaK(E, Z_Na)
+            sigma_k_I = sigmaK(E, Z_I)
 
-            mu_ph_total = sigma_ph_Na * n_Na + sigma_ph_I * n_I
-            mu_k_total = sigma_k_Na * n_Na + sigma_k_I * n_I
-            mu_total = mu_ph_total + mu_k_total
+            Sigma_ph, Sigma_k, Sigma_total = Sigma(sigma_ph_Na, sigma_ph_I, sigma_k_Na, sigma_k_I)
 
-            # Если сечение нулевое - фотон не взаимодействует, вылетает
-            if mu_total <= 0:
-                if total_deposited > 0:
-                    deposited_keV = total_deposited * 1000.0
-                    bin_idx = min(int(deposited_keV / bin_width), NBINS - 1)
-                    hist[bin_idx] += 1
+            if Sigma_total <= 0:
                 break
 
-            # Длина свободного пробега до следующего взаимодействия
-            s = Length(mu_total)
-            x_new, y_new, z_new = Interaction((x, y, z), l, m, n, s)
+            L = Length(Sigma_total)
+            P_int = Interaction(current_point, l, m, n, L)
 
-            # Проверка: не вылетел ли фотон из детектора?
-            if not (abs(z_new) <= half_height and x_new * x_new + y_new * y_new <= R * R):
-                # Фотон покинул детектор - регистрируем накопленную энергию
-                if total_deposited > 0:
-                    deposited_keV = total_deposited * 1000.0
-                    bin_idx = min(int(deposited_keV / bin_width), NBINS - 1)
-                    hist[bin_idx] += 1
+            if not inObj(P_int, d, R):
                 break
 
-            # Определяем тип взаимодействия (фотоэффект или комптон)
-            event = Lottery(mu_ph_total, mu_k_total)
+            interaction_type = Lottery(Sigma_ph, Sigma_k, Sigma_total)
 
-            if event == 'ph':
-                # Фотоэффект - вся оставшаяся энергия поглощается
-                total_deposited += E_ph
-                deposited_keV = total_deposited * 1000.0
-                bin_idx = min(int(deposited_keV / bin_width), NBINS - 1)
-                hist[bin_idx] += 1
+            if interaction_type == 'ph':
+                channel = int(round(E / Cch))
+                if 0 <= channel < num_channels:
+                    local_spectrum[channel] += 1
                 break
 
-            else:  # Комптоновское рассеяние
-                # Сэмплируем угол рассеяния по Клейну-Нишине
-                cos_theta = sample_compton_cos(E_ph)
-                phi = random.uniform(0, 2 * math.pi)
+            elif interaction_type == 'k':
+                l_new, m_new, n_new = ray()
+                cos_theta = cost(l, m, n, l_new, m_new, n_new)
+                dE = Eloss(cos_theta, E)
 
-                # Вычисляем энергию, переданную электрону
-                alpha = E_ph / m_e
-                E_loss = E_ph - E_ph / (1 + alpha * (1 - cos_theta))
+                if dE > 0:
+                    channel = int(round(dE / Cch))
+                    if 0 <= channel < num_channels:
+                        local_spectrum[channel] += 1
 
-                # Добавляем переданную энергию в накопленную
-                total_deposited += E_loss
+                E = E - dE
+                l, m, n = l_new, m_new, n_new
+                current_point = P_int
 
-                # Новая энергия фотона после рассеяния
-                E_ph_new = E_ph - E_loss
-                E_ph = E_ph_new
-
-                # Если фотон стал очень низкоэнергетичным - считаем, что он поглотится
-                if E_ph < 0.01:  # порог в keV
-                    total_deposited += E_ph
-                    deposited_keV = total_deposited * 1000.0
-                    bin_idx = min(int(deposited_keV / bin_width), NBINS - 1)
-                    hist[bin_idx] += 1
-                    break
-
-                # Поворачиваем направление фотона
-                l, m, n = rotate_dir(l, m, n, cos_theta, phi)
-
-                # Обновляем позицию (точка взаимодействия)
-                x, y, z = x_new, y_new, z_new
-
-                # Продолжаем цикл - фотон может рассеяться снова
-                # (без break!)
-
-    return hist, bin_width, E_max_keV
-
-
-def run_simulation(num_photons, source_name, num_processes=NUM_PROCESSES):
-    chunk_size = num_photons // num_processes
-    extra = num_photons % num_processes
-
-    with mp.Pool(processes=num_processes) as pool:
-        results = []
-        start = 0
-        for i in range(num_processes):
-            cnt = chunk_size + (1 if i < extra else 0)
-            results.append(pool.apply_async(simulate_part, (start, cnt, source_name)))
-            start += cnt
-        pool.close()
-        pool.join()
-
-        hists = []
-        bin_width = None
-        E_max_keV = None
-        for r in results:
-            hist, bw, emax = r.get()
-            hists.append(hist)
-            if bin_width is None:
-                bin_width = bw
-                E_max_keV = emax
-
-        total_hist = np.sum(hists, axis=0)
-    return total_hist, bin_width, E_max_keV
-
-
-def main():
-    source = 'Cs137'
-
-    start_time = time.time()
-    hist, bin_width, E_max_keV = run_simulation(N, source, NUM_PROCESSES)
-    elapsed = time.time() - start_time
-
-    energies_keV = np.linspace(0, E_max_keV, NBINS)
-
-    plt.figure(figsize=(10, 6))
-
-    plt.bar(energies_keV, hist, width=bin_width, align='center', edgecolor='black')
-
-    plt.xlabel('Energy, keV')
-    plt.ylabel('Counts')
-    plt.yscale('log')
-    plt.title(f'Gamma spectrum of {source} in NaI detector (N={N} photons)')
-    plt.grid(alpha=0.3)
-    plt.show()
-
-    print(f"Simulated photons: {N}")
-    print(f"Total registered events: {np.sum(hist)}")
-    print(f"Maximum energy in histogram: {E_max_keV:.0f} keV")
-    print(f"Elapsed time: {elapsed:.2f} seconds")
-    print(f"Number of processes used: {NUM_PROCESSES}")
+    return local_spectrum
 
 
 if __name__ == "__main__":
-    mp.freeze_support()
-    main()
+    R = float(input("введите радиус детектора R: "))
+    D = float(input("введите высоту детектора D: "))
+    d = D / 2
+    XO = float(input("введите x источника: "))
+    YO = float(input("введите y источника: "))
+    ZO = float(input("введите z источника: "))
+
+    N_events = int(input("введите количество фотонов N: "))
+
+    # Автоматически определяем оптимальное число процессов
+    num_cores = mp.cpu_count()
+    # Для больших N используем все ядра, для маленьких - меньше
+    if N_events < 10000:
+        use_cores = max(1, num_cores // 2)
+    else:
+        use_cores = num_cores
+
+    print(f"Доступно ядер: {num_cores}, используем: {use_cores}")
+
+    start_time = time.time()
+
+    Ps = (XO, YO, ZO)
+
+    P1_top = (0, 0, d)
+    P2_top = (R, 0, d)
+    P3_top = (0, R, d)
+    F_top = flateABCD(P1_top, P2_top, P3_top)
+
+    P1_bottom = (0, 0, -d)
+    P2_bottom = (R, 0, -d)
+    P3_bottom = (0, R, -d)
+    F_bottom = flateABCD(P1_bottom, P2_bottom, P3_bottom)
+
+    # Разбиваем на чанки для уменьшения накладных расходов
+    chunk_size = max(1, N_events // (use_cores * 10))  # Каждый процесс получает ~10 чанков
+    chunks = []
+    for i in range(0, N_events, chunk_size):
+        chunk_id = len(chunks)
+        actual_size = min(chunk_size, N_events - i)
+        chunks.append((chunk_id, i, actual_size, R, d, Ps, F_top, F_bottom))
+
+    print(f"Разбито на {len(chunks)} чанков (размер чанка: {chunk_size})")
+
+    # Создаём пул процессов
+    with mp.Pool(processes=use_cores) as pool:
+        print("Начинаем обработку...")
+
+        # Используем imap_unordered для лучшей производительности
+        results = []
+        total_chunks = len(chunks)
+        for i, result in enumerate(pool.imap_unordered(process_chunk, chunks)):
+            results.append(result)
+            if (i + 1) % max(1, total_chunks // 10) == 0:
+                elapsed = time.time() - start_time
+                print(
+                    f"Обработано {i + 1}/{total_chunks} чанков ({100 * (i + 1) / total_chunks:.1f}%) - {elapsed:.1f} сек")
+
+    # Суммируем результаты
+    print("Суммирование спектров...")
+    spectrum = [0] * num_channels
+    for local_spec in results:
+        for i, count in enumerate(local_spec):
+            spectrum[i] += count
+
+    end_time = time.time()
+    total_time = end_time - start_time
+    print(f"\nВремя выполнения: {total_time:.2f} с")
+    print(f"Производительность: {N_events / total_time:.0f} событий/сек")
+    print(f"Ускорение относительно одного ядра: ~{use_cores * (1 - 0.15):.1f}x (с учётом накладных расходов)")
+
+    # Построение графика
+    channels = np.arange(num_channels)
+    energy_axis = channels * Cch + E_min
+
+    plt.figure(figsize=(12, 6))
+    plt.bar(energy_axis, spectrum, width=Cch, align='edge')
+    plt.xlabel('энергия (МэВ)')
+    plt.ylabel('количество отсчётов')
+    plt.title(f'спектр 137Cs (NaI), R={R} см, D={D} см, {use_cores} ядер')
+    plt.grid(True, alpha=0.3)
+    plt.yscale('log')
+    plt.xlim(E_min, E_max)
+    plt.show()
