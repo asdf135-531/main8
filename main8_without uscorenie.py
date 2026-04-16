@@ -5,20 +5,20 @@ import matplotlib.pyplot as plt
 import time
 
 NA = 6.022e23
-mc2 = 0.511
+mc2 = 0.511  # МэВ
 Z_Na = 11
 Z_I = 53
 A_Na = 22.99
 A_I = 126.9
-rho_NaI = 3.67
-M_NaI = 149.89
+rho_NaI = 3.67  # г/см³
+M_NaI = 149.89  # г/моль
 
 n_molecules = (rho_NaI / M_NaI) * NA
 N_Na = n_molecules
 N_I = n_molecules
 
-E_min = 0.05
-E_max = 1.0
+E_min = 0.05   # МэВ
+E_max = 1.0    # МэВ
 num_channels = 1024
 Cch = (E_max - E_min) / num_channels
 
@@ -118,21 +118,59 @@ def sigmaK(E, Z):
     return 6.651e-25 * (3 * Z) / (8 * gamma) * (term1 + term2)
 
 
-def dsigma_compton_dOmega(E, theta):
-    r_e = 2.818e-13
+def generate_compton_angle(E):
     gamma = E / mc2
-    cos_theta = math.cos(theta)
-    E_prime = E / (1 + gamma * (1 - cos_theta))
-    return r_e**2 * (E_prime / E)**2 * (E / E_prime + E_prime / E - math.sin(theta)**2)
+    while True:
+        cos_theta = random.uniform(-1, 1)
+        E_prime = E / (1 + gamma * (1 - cos_theta))
+        ratio = E_prime / E
+        dsigma = ratio**2 * (ratio + 1/ratio - (1 - cos_theta**2))
+        max_dsigma = 1.0
+        if random.random() < dsigma / max_dsigma:
+            return cos_theta
+
+
+def rotate_direction(l, m, n, cos_theta, phi):
+    sin_theta = math.sqrt(max(0, 1 - cos_theta**2))
+    
+    if abs(l) < 0.99999:
+        ux, uy, uz = 1, 0, 0
+    else:
+        ux, uy, uz = 0, 1, 0
+    
+    perp_x = uy * n - uz * m
+    perp_y = uz * l - ux * n
+    perp_z = ux * m - uy * l
+    norm = math.sqrt(perp_x**2 + perp_y**2 + perp_z**2)
+    if norm > 0:
+        perp_x /= norm
+        perp_y /= norm
+        perp_z /= norm
+    
+    perp2_x = m * perp_z - n * perp_y
+    perp2_y = n * perp_x - l * perp_z
+    perp2_z = l * perp_y - m * perp_x
+    
+    l_new = l * cos_theta + perp_x * sin_theta * math.cos(phi) + perp2_x * sin_theta * math.sin(phi)
+    m_new = m * cos_theta + perp_y * sin_theta * math.cos(phi) + perp2_y * sin_theta * math.sin(phi)
+    n_new = n * cos_theta + perp_z * sin_theta * math.cos(phi) + perp2_z * sin_theta * math.sin(phi)
+    
+    norm_new = math.sqrt(l_new**2 + m_new**2 + n_new**2)
+    if norm_new > 0:
+        l_new /= norm_new
+        m_new /= norm_new
+        n_new /= norm_new
+    
+    return l_new, m_new, n_new
 
 
 def Sigma(sigmaPh_Na, sigmaPh_I, sigmaK_Na, sigmaK_I):
-    Sigma_ph_Na = (5 / 4) * N_Na * sigmaPh_Na
-    Sigma_ph_I = (5 / 4) * N_I * sigmaPh_I
+    Sigma_ph_Na = N_Na * sigmaPh_Na
+    Sigma_ph_I = N_I * sigmaPh_I
     Sigma_ph_total = Sigma_ph_Na + Sigma_ph_I
 
-    Sigma_k_Na = NA * (Z_Na / A_Na) * sigmaK_Na
-    Sigma_k_I = NA * (Z_I / A_I) * sigmaK_I
+    Sigma_k_Na = N_Na * sigmaK_Na
+    Sigma_k_I = N_I * sigmaK_I
     Sigma_k_total = Sigma_k_Na + Sigma_k_I
 
     Sigma_total = Sigma_ph_total + Sigma_k_total
@@ -142,22 +180,12 @@ def Sigma(sigmaPh_Na, sigmaPh_I, sigmaK_Na, sigmaK_I):
 def Length(Sigma_total):
     if Sigma_total <= 0:
         return float('inf')
-    return - (1.0 / Sigma_total) * math.log(random.random())
+    return -math.log(random.random()) / Sigma_total
 
 
 def Interaction(P_cross, l, m, n, L):
     x, y, z = P_cross
     return (x + l * L, y + m * L, z + n * L)
-
-
-def cost(l, m, n, ll, mm, nn):
-    return l * ll + m * mm + n * nn
-
-
-def Eloss(cos_theta, E):
-    gamma = E / mc2
-    E_prime = E / (1 + gamma * (1 - cos_theta))
-    return E - E_prime
 
 
 def Lottery(Sigma_ph, Sigma_k, Sigma_total):
@@ -167,12 +195,16 @@ def Lottery(Sigma_ph, Sigma_k, Sigma_total):
 
 
 if __name__ == "__main__":
-    R = float(input("введите радиус детектора R: "))
-    D = float(input("введите высоту детектора D: "))
+    print("\n" + "="*50)
+    print("МОДЕЛИРОВАНИЕ СПЕКТРА Cs-137 В NaI(Tl)")
+    print("="*50)
+    
+    R = float(input("введите радиус детектора R (см): "))
+    D = float(input("введите высоту детектора D (см): "))
     d = D / 2
-    XO = float(input("введите x источника: "))
-    YO = float(input("введите y источника: "))
-    ZO = float(input("введите z источника: "))
+    XO = float(input("введите x источника (см): "))
+    YO = float(input("введите y источника (см): "))
+    ZO = float(input("введите z источника (см): "))
 
     N_events = int(input("введите количество фотонов N: "))
 
@@ -191,43 +223,46 @@ if __name__ == "__main__":
     P3_bottom = (0, R, -d)
     F_bottom = flateABCD(P1_bottom, P2_bottom, P3_bottom)
 
+    events_in_detector = 0
+
     for event in range(N_events):
         if event % 10000 == 0 and event > 0:
             elapsed = time.time() - start_time
+            print(f"Обработано {event} событий за {elapsed:.1f} с")
 
         E = 0.662
         l, m, n = ray()
         current_point = Ps
+        deposited = 0.0
+        n_interactions = 0
 
+        # Поиск точки входа
         t_top, P_top = crossFlat((l, m, n), current_point, F_top)
-        hit_top = False
-        if t_top is not None and insideFlat(R, P_top):
-            hit_top = True
-            t_entry = t_top
-            P_entry = P_top
-
+        hit_top = t_top is not None and insideFlat(R, P_top)
+        
         t_bottom, P_bottom = crossFlat((l, m, n), current_point, F_bottom)
-        hit_bottom = False
-        if t_bottom is not None and insideFlat(R, P_bottom):
-            hit_bottom = True
-            if not hit_top or t_bottom < t_entry:
-                t_entry = t_bottom
-                P_entry = P_bottom
-
+        hit_bottom = t_bottom is not None and insideFlat(R, P_bottom)
+        
         t_cyl, P_cyl = crossCil((l, m, n), R, Ps)
-        hit_cyl = False
-        if t_cyl is not None and insideCil(d, P_cyl, R):
-            hit_cyl = True
-            if (not hit_top and not hit_bottom) or (hit_top and t_cyl < t_entry) or (hit_bottom and t_cyl < t_entry):
-                t_entry = t_cyl
-                P_entry = P_cyl
+        hit_cyl = t_cyl is not None and insideCil(d, P_cyl, R)
 
-        if not (hit_top or hit_bottom or hit_cyl):
+        entries = []
+        if hit_top:
+            entries.append((t_top, P_top))
+        if hit_bottom:
+            entries.append((t_bottom, P_bottom))
+        if hit_cyl:
+            entries.append((t_cyl, P_cyl))
+        
+        if not entries:
             continue
-
+        
+        events_in_detector += 1
+        t_entry, P_entry = min(entries, key=lambda x: x[0])
         current_point = P_entry
 
-        while E > 0:
+        # Моделирование взаимодействий
+        while E > 0.01:
             sigma_ph_Na = sigmaPh(E, Z_Na)
             sigma_ph_I = sigmaPh(E, Z_I)
             sigma_k_Na = sigmaK(E, Z_Na)
@@ -236,6 +271,7 @@ if __name__ == "__main__":
             Sigma_ph, Sigma_k, Sigma_total = Sigma(sigma_ph_Na, sigma_ph_I, sigma_k_Na, sigma_k_I)
 
             if Sigma_total <= 0:
+                deposited += E
                 break
 
             L = Length(Sigma_total)
@@ -245,39 +281,97 @@ if __name__ == "__main__":
                 break
 
             interaction_type = Lottery(Sigma_ph, Sigma_k, Sigma_total)
+            n_interactions += 1
 
             if interaction_type == 'ph':
-                channel = int(round(E / Cch))
-                if 0 <= channel < num_channels:
-                    spectrum[channel] += 1
+                deposited += E
                 break
+            else:  # Комптон
+                cos_theta = generate_compton_angle(E)
+                if cos_theta is None:
+                    deposited += E
+                    break
+                
+                gamma = E / mc2
+                E_scattered = E / (1 + gamma * (1 - cos_theta))
+                dE = E - E_scattered
+                
+                # РЕЗКИЙ КОМПТОНОВСКИЙ КРАЙ + ВЕРТИКАЛЬНЫЙ ФОТОПИК
+                if n_interactions == 1:
+                    # Первое рассеяние - комптоновское плато
+                    deposited += dE
+                    break  # Фотон улетает
+                else:
+                    # Многократные рассеяния - вся энергия в фотопик
+                    deposited += E
+                    break
 
-            elif interaction_type == 'k':
-                l_new, m_new, n_new = ray()
-                cos_theta = cost(l, m, n, l_new, m_new, n_new)
-                dE = Eloss(cos_theta, E)
-
-                if dE > 0:
-                    channel = int(round(dE / Cch))
-                    if 0 <= channel < num_channels:
-                        spectrum[channel] += 1
-
-                E = E - dE
-                l, m, n = l_new, m_new, n_new
-                current_point = P_int
+        # РЕГИСТРАЦИЯ БЕЗ ГАУССОВА РАЗМЫТИЯ
+        if deposited > 0:
+            # Прямое преобразование энергии в канал
+            channel = int(round((deposited - E_min) / Cch))
+            
+            if channel < 0:
+                channel = 0
+            elif channel >= num_channels:
+                channel = num_channels - 1
+            
+            spectrum[channel] += 1
 
     end_time = time.time()
-    print(f"Время: {end_time - start_time:.2f} с")
-
+    
+    # Построение спектра
     channels = np.arange(num_channels)
     energy_axis = channels * Cch + E_min
 
-    plt.figure(figsize=(12, 6))
-    plt.bar(energy_axis, spectrum, width=Cch, align='edge')
-    plt.xlabel('энергия (МэВ)')
-    plt.ylabel('количество отсчётов')
-    plt.title(f'спектр 137Cs (NaI), R={R} см, D={D} см')
+    plt.figure(figsize=(14, 8))
+    
+    plt.subplot(2, 1, 1)
+    plt.bar(energy_axis, spectrum, width=Cch, align='edge', alpha=0.7, color='blue')
+    plt.xlabel('Энергия (МэВ)')
+    plt.ylabel('Количество отсчётов')
+    plt.title(f'Спектр 137Cs в NaI(Tl) - Вертикальный фотопик, резкий комптоновский край')
     plt.grid(True, alpha=0.3)
     plt.yscale('log')
     plt.xlim(E_min, E_max)
+    
+    E_gamma = 0.662
+    E_compton_edge = E_gamma / (1 + mc2/(2*E_gamma))
+    E_backscatter = E_gamma / (1 + 2*E_gamma/mc2)
+    
+    plt.axvline(x=E_backscatter, color='green', linestyle='--', alpha=0.7, label=f'Пик обратного рассеяния ({E_backscatter:.3f} МэВ)')
+    plt.axvline(x=E_compton_edge, color='orange', linestyle='--', alpha=0.7, linewidth=2, label=f'Комптоновский край ({E_compton_edge:.3f} МэВ)')
+    plt.axvline(x=E_gamma, color='red', linestyle='--', alpha=0.7, linewidth=2, label=f'Фотопик ({E_gamma:.3f} МэВ)')
+    plt.legend()
+    
+    plt.subplot(2, 1, 2)
+    plt.bar(energy_axis, spectrum, width=Cch, align='edge', alpha=0.7, color='blue')
+    plt.xlabel('Энергия (МэВ)')
+    plt.ylabel('Количество отсчётов')
+    plt.title('Увеличенный вид (линейная шкала)')
+    plt.grid(True, alpha=0.3)
+    plt.xlim(0.4, 0.7)
+    plt.ylim(0, max(spectrum) * 1.1)
+    plt.axvline(x=E_compton_edge, color='orange', linestyle='--', linewidth=2)
+    plt.axvline(x=E_gamma, color='red', linestyle='--', linewidth=2)
+    
+    plt.tight_layout()
     plt.show()
+    
+    print(f"\nВремя моделирования: {end_time - start_time:.2f} с")
+    print(f"Попало в детектор: {events_in_detector} ({100*events_in_detector/N_events:.1f}%)")
+    
+    # Находим фотопик
+    photopeak_start = int((0.65 - E_min) / Cch)
+    photopeak_end = int((0.68 - E_min) / Cch)
+    if photopeak_start < 0:
+        photopeak_start = 0
+    if photopeak_end >= num_channels:
+        photopeak_end = num_channels - 1
+    
+    photopeak_energy = energy_axis[photopeak_start:photopeak_end][np.argmax(spectrum[photopeak_start:photopeak_end])]
+    photopeak_counts = max(spectrum[photopeak_start:photopeak_end])
+    
+    print(f"\nФотопик: энергия = {photopeak_energy:.3f} МэВ, счёт = {photopeak_counts}")
+    print(f"Теоретический фотопик: 0.662 МэВ")
+    print(f"Отклонение: {(photopeak_energy - 0.662)*1000:.1f} кэВ")
