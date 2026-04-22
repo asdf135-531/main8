@@ -3,7 +3,7 @@ import random
 import matplotlib.pyplot as plt
 import multiprocessing as mp
 import time
-
+#
 def simulate_chunk(args):
     detector, n_events = args
 

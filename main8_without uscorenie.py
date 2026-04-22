@@ -2,7 +2,7 @@ import math
 import random
 import matplotlib.pyplot as plt
 import time
-
+#
 class Gamma:
 
     def __init__(self):
